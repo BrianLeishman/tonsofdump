@@ -24,9 +24,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 	"unicode"
 
+	"github.com/fatih/color"
 	_ "github.com/go-sql-driver/mysql"
 	pb "gopkg.in/cheggaaa/pb.v1"
 )
@@ -38,6 +38,7 @@ var keysRegex = regexp.MustCompile(`(?s)(,\n\s+(?:KEY|FULLTEXT).+?),?\n\s*(?:\) 
 var constraintsRegex = regexp.MustCompile(`(?s)(,\n\s+CONSTRAINT.+?),?\n\s*\) ENGINE`)
 
 var createToAlterRegex = regexp.MustCompile(`\n\s+`)
+var constraintsCreateToAlterRegex = regexp.MustCompile(`,?\n\s+`)
 
 type scehmaObject struct {
 	defualtCharacterSet string
@@ -107,9 +108,9 @@ func main() {
 		panic("your MySQL username is required (-u)")
 	}
 
-	if StrEmpty(*passwordPtr) {
-		panic("your MySQL password is required (-p)")
-	}
+	// if StrEmpty(*passwordPtr) {
+	// 	panic("your MySQL password is required (-p)")
+	// }
 
 	if StrEmpty(*hostPtr) {
 		panic("your MySQL host is required (-h)")
@@ -131,17 +132,52 @@ func main() {
 	err = db.Ping()
 	check(err)
 
+	all := false
+	procs := false
+	funcs := false
+	views := false
+
 	tableNames := strings.Split(*tablesPtr, ",")
 	tables := make([]tableObject, 0, len(tableNames))
 	for _, t := range tableNames {
-		tables = append(tables, tableObject{table: strings.TrimSpace(t)})
+		table := strings.TrimSpace(t)
+		switch strings.ToLower(table) {
+		case "$all":
+			all = true
+		case "$procs":
+			procs = true
+		case "$funcs", "$functions":
+			funcs = true
+		case "$views":
+			views = true
+		default:
+			tables = append(tables, tableObject{table: table})
+		}
 	}
 
-	for i, t := range tables {
-		log.Println("Getting create table for", t.table)
-		tableCreateData := db.QueryRow("show create table`" + t.table + "`")
-		err = tableCreateData.Scan(&tables[i].table, &tables[i].createTable)
+	if all {
+		tablesKeys := make(map[string]struct{}, len(tables))
+		for _, t := range tables {
+			tablesKeys[t.table] = struct{}{}
+		}
+
+		tablesData, err := db.Query("select`TABLE_NAME`" +
+			"from`information_schema`.`tables`" +
+			"where`table_schema`=database()" +
+			"and`TABLE_COMMENT`<>'VIEW';")
 		check(err)
+
+		tables = make([]tableObject, 0, len(tableNames))
+
+		for tablesData.Next() {
+			var table string
+			err = tablesData.Scan(&table)
+			check(err)
+
+			if _, ok := tablesKeys[table]; !ok {
+				tables = append(tables, tableObject{table: table})
+			}
+		}
 	}
 
 	if !StrEmpty(*directoryPtr) {
@@ -151,7 +187,149 @@ func main() {
 		check(err)
 	}
 
-	log.Println("Getting schema character set & collation")
+	if procs {
+		log.Println("Getting procs...")
+		procsCount := 0
+
+		f, err := os.Create(directory + "/$procs.sql")
+		check(err)
+		defer f.Sync()
+		defer f.Close()
+
+		w := bufio.NewWriter(f)
+
+		procsData, err := db.Query("show procedure status where`Db`=database()")
+		check(err)
+
+		w.WriteString("use`")
+		w.WriteString(*databasePtr)
+		w.WriteString("`;\n\n")
+
+		for procsData.Next() {
+			var proc string
+			var x interface{}
+			err = procsData.Scan(&x, &proc, &x, &x, &x, &x, &x, &x, &x, &x, &x)
+			check(err)
+
+			procData := db.QueryRow("show create procedure`" + proc + "`")
+			var createProc string
+			err = procData.Scan(&x, &x, &createProc, &x, &x, &x)
+			check(err)
+
+			w.WriteString("drop procedure if exists`")
+			w.WriteString(proc)
+			w.WriteString("`;\n\nDELIMITER $$\n")
+			w.WriteString(createProc)
+			w.WriteString("$$\nDELIMITER ;\n\n")
+
+			procsCount++
+		}
+
+		w.Flush()
+
+		// log.Println("Done,", procsCount)
+	}
+
+	if funcs {
+		log.Println("Getting funcs...")
+		funcsCount := 0
+
+		f, err := os.Create(directory + "/$funcs.sql")
+		check(err)
+		defer f.Sync()
+		defer f.Close()
+
+		w := bufio.NewWriter(f)
+
+		funcsData, err := db.Query("show function status where`Db`=database()")
+		check(err)
+
+		w.WriteString("use`")
+		w.WriteString(*databasePtr)
+		w.WriteString("`;\n\n")
+
+		for funcsData.Next() {
+			var function string
+			var x interface{}
+			err = funcsData.Scan(&x, &function, &x, &x, &x, &x, &x, &x, &x, &x, &x)
+			check(err)
+
+			funcData := db.QueryRow("show create function`" + function + "`")
+			var createFunc string
+			err = funcData.Scan(&x, &x, &createFunc, &x, &x, &x)
+			check(err)
+
+			w.WriteString("drop function if exists`")
+			w.WriteString(function)
+			w.WriteString("`;\n\nDELIMITER $$\n")
+			w.WriteString(createFunc)
+			w.WriteString("$$\nDELIMITER ;\n\n")
+
+			funcsCount++
+		}
+
+		w.Flush()
+
+		// log.Println("Done,", funcsCount)
+	}
+
+	if views {
+		log.Println("Getting views...")
+		viewsCount := 0
+
+		f, err := os.Create(directory + "/$views.sql")
+		check(err)
+		defer f.Sync()
+		defer f.Close()
+
+		w := bufio.NewWriter(f)
+
+		viewsData, err := db.Query("select`TABLE_NAME`" +
+			"from`information_schema`.`tables`" +
+			"where`table_schema`=database()" +
+			"and`TABLE_COMMENT`='VIEW';")
+		check(err)
+
+		w.WriteString("use`")
+		w.WriteString(*databasePtr)
+		w.WriteString("`;\n\n")
+
+		for viewsData.Next() {
+			var view string
+			err = viewsData.Scan(&view)
+			check(err)
+
+			viewData := db.QueryRow("show create view`" + view + "`")
+			var createView string
+			var x interface{}
+			err = viewData.Scan(&x, &createView, &x, &x)
+			check(err)
+
+			w.WriteString("drop view if exists`")
+			w.WriteString(view)
+			w.WriteString("`;\n\n")
+			w.WriteString(createView)
+			w.WriteString(";\n\n")
+
+			viewsCount++
+		}
+
+		w.Flush()
+
+		// log.Println("Done,", viewsCount)
+	}
+
+	// fmt.Printf("%#v", tables)
+	// os.Exit(0)
+
+	for i, t := range tables {
+		// log.Println("Getting create table for", t.table)
+		tableCreateData := db.QueryRow("show create table`" + t.table + "`")
+		err = tableCreateData.Scan(&tables[i].table, &tables[i].createTable)
+		check(err)
+	}
+
+	// log.Println("Getting schema character set & collation")
 	schemaData := db.QueryRow("select`DEFAULT_CHARACTER_SET_NAME`,`DEFAULT_COLLATION_NAME`" +
 		"from`INFORMATION_SCHEMA`.`SCHEMATA`" +
 		"where schema_name=database();")
@@ -159,16 +337,33 @@ func main() {
 	err = schemaData.Scan(&s.defualtCharacterSet, &s.defaultCollation)
 	check(err)
 
-	log.Println("Starting table loop")
+	constraintsFileName := directory + "/$constraints.sql"
+	constraintsFile, err := os.Create(constraintsFileName)
+	check(err)
+
+	defer constraintsFile.Sync()
+	defer constraintsFile.Close()
+
+	constraintsWriter := bufio.NewWriter(constraintsFile)
+
+	constraintsWriter.WriteString("use`")
+	constraintsWriter.WriteString(*databasePtr)
+	constraintsWriter.WriteString("`;\n\nSET FOREIGN_KEY_CHECKS=0;\n\n")
+
+	writers := []*bufio.Writer{constraintsWriter, nil}
+
+	// log.Println("Starting table loop")
 	for i, t := range tables {
 		log.Println("Starting table", t.table)
-		log.Println("Getting primary key(s)")
+		// log.Println("Getting primary key(s)")
 
 		fileName := directory + "/" + t.table + ".sql"
 		f, err := os.Create(fileName)
 		check(err)
 
 		w := bufio.NewWriter(f)
+
+		writers[1] = w
 
 		defer f.Sync()
 		defer f.Close()
@@ -211,7 +406,7 @@ func main() {
 
 		primaryValuesPlaceholder += ")"
 
-		log.Println("Done", primaryKeysString)
+		// log.Println("Done", primaryKeysString)
 
 		keyMatches := keysRegex.FindStringSubmatch(t.createTable)
 		hasKeyMatches := len(keyMatches) >= 2
@@ -225,11 +420,13 @@ func main() {
 			tables[i].createTable = strings.Replace(tables[i].createTable, constraintMatches[1], "", 1)
 		}
 
+		// for _, w := range writers {
 		w.WriteString("use`")
 		w.WriteString(*databasePtr)
-		w.WriteString("`;\n\n" +
-			"SET FOREIGN_KEY_CHECKS=0;\n\n" +
-			"SET global max_allowed_packet=1073741824;\nset @@wait_timeout=31536000;\n\n" +
+		w.WriteString("`;\n\nSET FOREIGN_KEY_CHECKS=0;\n\n")
+		// }
+
+		w.WriteString("SET global max_allowed_packet=1073741824;\nset @@wait_timeout=31536000;\n\n" +
 			"DROP procedure IF EXISTS `_tonsofdatabase_remove_constraints`;\n" +
 			"DELIMITER $$\n" +
 			"USE `sterling`$$\n" +
@@ -263,7 +460,7 @@ func main() {
 		w.WriteString(*databasePtr)
 		w.WriteString("');\n\n")
 
-		log.Println("Getting triggers...")
+		// log.Println("Getting triggers...")
 		triggersData, err := db.Query("select`TRIGGER_NAME`" +
 			"from`information_schema`.`triggers`" +
 			"where`EVENT_OBJECT_TABLE`='" + t.table + "' " +
@@ -281,9 +478,9 @@ func main() {
 
 			triggers = append(triggers, triggerName)
 		}
-		log.Println("Done")
+		// log.Println("Done")
 
-		log.Println("Getting average row size...")
+		// log.Println("Getting average row size...")
 		averageRowSizeData := db.QueryRow("select avg_row_length " +
 			"from`information_schema`.tables " +
 			"where table_name='" + t.table + "'" +
@@ -298,14 +495,14 @@ func main() {
 		if chunkSize < 1 {
 			chunkSize = 1
 		}
-		log.Println("Done, avg row size:", averageRowSize, ", chunkSize:", chunkSize)
+		// log.Println("Done, avg row size:", averageRowSize, ", chunkSize:", chunkSize)
 
-		log.Println("Getting row count...")
+		// log.Println("Getting row count...")
 		countData := db.QueryRow("select count(*)from`" + t.table + "`")
 		var count int
 		err = countData.Scan(&count)
 		check(err)
-		log.Println("Done, count:", count)
+		// log.Println("Done, count:", count)
 
 		w.WriteString("drop table if exists`")
 		w.WriteString(t.table)
@@ -313,7 +510,7 @@ func main() {
 		w.WriteString(tables[i].createTable)
 		w.WriteString(";\n\n")
 
-		log.Println("Getting columns...")
+		// log.Println("Getting columns...")
 		columnsData, err := db.Query("select`COLUMN_NAME`,ifnull(`CHARACTER_SET_NAME`,''),ifnull(`COLLATION_NAME`,''),`DATA_TYPE`" +
 			"from`INFORMATION_SCHEMA`.`COLUMNS`" +
 			"where`TABLE_NAME`='" + t.table + "' " +
@@ -350,7 +547,7 @@ func main() {
 
 			columnsCount++
 		}
-		log.Println("Done")
+		// log.Println("Done")
 
 		lastPrimaryValues := make([]interface{}, primaryKeysCount, primaryKeysCount)
 		for i := 0; i < primaryKeysCount; i++ {
@@ -365,8 +562,8 @@ func main() {
 
 		t = tables[i]
 
-		log.Println("Getting table data...")
-		start := time.Now()
+		// log.Println("Getting table data...")
+		// start := time.Now()
 
 		bar := pb.StartNew(count)
 
@@ -446,9 +643,9 @@ func main() {
 		w.WriteString("\n")
 
 		bar.Finish()
-		log.Println("Done, took", time.Since(start))
+		// log.Println("Done, took", time.Since(start))
 
-		log.Println("Getting create triggers...")
+		// log.Println("Getting create triggers...")
 		triggersCount := 0
 		for _, t := range triggers {
 			triggerData := db.QueryRow("SHOW CREATE trigger`" + t + "`;")
@@ -463,7 +660,7 @@ func main() {
 
 			triggersCount++
 		}
-		log.Println("Done,", triggersCount)
+		// log.Println("Done,", triggersCount)
 
 		if hasKeyMatches {
 			w.WriteString("alter table`")
@@ -473,7 +670,7 @@ func main() {
 			w.WriteString(";\n\n")
 		}
 
-		log.Println("Getting foreign keys...")
+		// log.Println("Getting foreign keys...")
 		foreignKeysData, err := db.Query("select`CONSTRAINT_NAME`,`TABLE_NAME`,`COLUMN_NAME`,`REFERENCED_COLUMN_NAME`" +
 			"from`information_schema`.`KEY_COLUMN_USAGE`" +
 			"where`REFERENCED_TABLE_NAME`='" + t.table + "' " +
@@ -481,43 +678,68 @@ func main() {
 		check(err)
 
 		hasForeignKeys := false
+		constraintsReplacement := ";\nalter table`" + t.table + "`add "
 
-		if hasConstraintMatches {
-			w.WriteString("alter table`")
-			w.WriteString(t.table)
-			w.WriteString("`")
-			w.WriteString(createToAlterRegex.ReplaceAllString(strings.TrimLeft(constraintMatches[1], ","), "\n  ADD "))
-			w.WriteString(";\n\n")
+		for _, w := range writers {
+			if hasConstraintMatches {
+				w.WriteString(constraintsCreateToAlterRegex.ReplaceAllString(strings.TrimLeft(constraintMatches[1], ","), constraintsReplacement))
+				w.WriteString(";\n\n")
+			}
+
+			for foreignKeysData.Next() {
+				f := foreignKeyObject{}
+				err = foreignKeysData.Scan(&f.constraint, &f.table, &f.column, &f.referencedColumn)
+				check(err)
+
+				w.WriteString("alter table`")
+				w.WriteString(f.table)
+				w.WriteString("`add constraint`")
+				w.WriteString(f.column)
+				w.WriteString("`foreign key(`")
+				w.WriteString(f.constraint)
+				w.WriteString("`)references`")
+				w.WriteString(t.table)
+				w.WriteString("`(`")
+				w.WriteString(f.referencedColumn)
+				w.WriteString("`);\n")
+
+				hasForeignKeys = true
+			}
+			if hasForeignKeys {
+				w.WriteString("\n")
+			}
 		}
-
-		for foreignKeysData.Next() {
-			f := foreignKeyObject{}
-			err = foreignKeysData.Scan(&f.constraint, &f.table, &f.column, &f.referencedColumn)
-			check(err)
-
-			w.WriteString("alter table`")
-			w.WriteString(t.table)
-			w.WriteString("`add constraint`")
-			w.WriteString(f.column)
-			w.WriteString("`foreign key(`")
-			w.WriteString(f.constraint)
-			w.WriteString("`)references`$Table`(`")
-			w.WriteString(f.referencedColumn)
-			w.WriteString("`);\n")
-
-			hasForeignKeys = true
-		}
-		if hasForeignKeys {
-			w.WriteString("\n")
-		}
-		log.Println("Done")
+		// log.Println("Done")
 
 		w.WriteString("SET FOREIGN_KEY_CHECKS=1;\n\n")
 
-		fmt.Println("Import dump file with `pv", fileName, "| mysql -u root -p -f`")
+		// fmt.Println("Import dump file with `pv", "'"+fileName+"'", "| mysql -u root -p -f`")
 
 		w.Flush()
 	}
 
-	// fmt.Println("Dump files were stored in", directory)
+	constraintsWriter.WriteString("SET FOREIGN_KEY_CHECKS=1;\n\n")
+	constraintsWriter.Flush()
+
+	importCommand := "cd '" + directory + "' && pv"
+	for _, t := range tables {
+		importCommand += " '" + t.table + ".sql'"
+	}
+
+	if funcs {
+		importCommand += " '$funcs.sql'"
+	}
+
+	if procs {
+		importCommand += " '$procs.sql'"
+	}
+
+	if views {
+		importCommand += " '$views.sql'"
+	}
+
+	importCommand += " '$constraints.sql' | mysql -u root -p -f"
+
+	color.Cyan("%s\n", importCommand)
+
 }
