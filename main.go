@@ -738,7 +738,7 @@ func main() {
 		importCommand += " '$views.sql'"
 	}
 
-	importCommand += " '$constraints.sql' | mysql -u root -p -f"
+	importCommand += " '$constraints.sql' | mysql -fc -u root -p"
 
 	color.Cyan("%s\n", importCommand)
 
