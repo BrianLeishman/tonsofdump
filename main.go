@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/fatih/color"
@@ -34,14 +35,14 @@ import (
 var db *sql.DB
 var err error
 
-var keysRegex = regexp.MustCompile(`(?s)(,\n\s+(?:UNIQUE|KEY|FULLTEXT).+?),?\n\s*(?:\) ENGINE|CONSTRAINT)`)
+var keysRegex = regexp.MustCompile(`(?s)(,\n\s+(?:KEY|FULLTEXT).+?),?\n\s*(?:\) ENGINE|CONSTRAINT)`)
 var constraintsRegex = regexp.MustCompile(`(?s)(,\n\s+CONSTRAINT.+?),?\n\s*\) ENGINE`)
 
 var createToAlterRegex = regexp.MustCompile(`\n\s+`)
 var constraintsCreateToAlterRegex = regexp.MustCompile(`,?\n\s+`)
 
-type scehmaObject struct {
-	defualtCharacterSet string
+type schemaObject struct {
+	defaultCharacterSet string
 	defaultCollation    string
 }
 
@@ -180,12 +181,15 @@ func main() {
 		}
 	}
 
+	prefix := "tonsofdump-" + *databasePtr + "-" + *hostPtr + "-" + time.Now().Format("20060102150405")
 	if !StrEmpty(*directoryPtr) {
-		directory = *directoryPtr
+		directory = *directoryPtr + "/" + prefix
 	} else {
-		directory, err = ioutil.TempDir("", "tonsofdump-"+*databasePtr+"-"+*hostPtr+"-")
+		directory, err = ioutil.TempDir("", prefix)
 		check(err)
 	}
+
+	os.MkdirAll(directory, os.ModePerm)
 
 	if procs {
 		log.Println("Getting procs...")
@@ -333,8 +337,8 @@ func main() {
 	schemaData := db.QueryRow("select`DEFAULT_CHARACTER_SET_NAME`,`DEFAULT_COLLATION_NAME`" +
 		"from`INFORMATION_SCHEMA`.`SCHEMATA`" +
 		"where schema_name=database();")
-	s := scehmaObject{}
-	err = schemaData.Scan(&s.defualtCharacterSet, &s.defaultCollation)
+	s := schemaObject{}
+	err = schemaData.Scan(&s.defaultCharacterSet, &s.defaultCollation)
 	check(err)
 
 	constraintsFileName := directory + "/$constraints.sql"
@@ -536,7 +540,7 @@ func main() {
 			columnsString += "`" + c.column + "`"
 
 			if StrEmpty(c.characterSet) {
-				c.characterSet = s.defualtCharacterSet
+				c.characterSet = s.defaultCharacterSet
 			}
 
 			if StrEmpty(c.collation) {
