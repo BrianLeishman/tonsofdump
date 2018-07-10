@@ -34,7 +34,7 @@ import (
 var db *sql.DB
 var err error
 
-var keysRegex = regexp.MustCompile(`(?s)(,\n\s+(?:KEY|FULLTEXT).+?),?\n\s*(?:\) ENGINE|CONSTRAINT)`)
+var keysRegex = regexp.MustCompile(`(?s)(,\n\s+(?:UNIQUE|KEY|FULLTEXT).+?),?\n\s*(?:\) ENGINE|CONSTRAINT)`)
 var constraintsRegex = regexp.MustCompile(`(?s)(,\n\s+CONSTRAINT.+?),?\n\s*\) ENGINE`)
 
 var createToAlterRegex = regexp.MustCompile(`\n\s+`)
@@ -348,7 +348,7 @@ func main() {
 
 	constraintsWriter.WriteString("use`")
 	constraintsWriter.WriteString(*databasePtr)
-	constraintsWriter.WriteString("`;\n\nSET FOREIGN_KEY_CHECKS=0;\n\n")
+	constraintsWriter.WriteString("`;\n\nset foreign_key_checks=0;\n\nset unique_checks=0;\n\n")
 
 	writers := []*bufio.Writer{constraintsWriter, nil}
 
@@ -423,7 +423,7 @@ func main() {
 		// for _, w := range writers {
 		w.WriteString("use`")
 		w.WriteString(*databasePtr)
-		w.WriteString("`;\n\nSET FOREIGN_KEY_CHECKS=0;\n\n")
+		w.WriteString("`;\n\nset foreign_key_checks=0;\n\nset unique_checks=0;\n\n")
 		// }
 
 		w.WriteString("SET global max_allowed_packet=1073741824;\nset @@wait_timeout=31536000;\n\n" +
@@ -711,14 +711,14 @@ func main() {
 		}
 		// log.Println("Done")
 
-		w.WriteString("SET FOREIGN_KEY_CHECKS=1;\n\n")
+		w.WriteString("set foreign_key_checks=1;\n\nset unique_checks=1;\n\n")
 
 		// fmt.Println("Import dump file with `pv", "'"+fileName+"'", "| mysql -u root -p -f`")
 
 		w.Flush()
 	}
 
-	constraintsWriter.WriteString("SET FOREIGN_KEY_CHECKS=1;\n\n")
+	constraintsWriter.WriteString("set foreign_key_checks=1;\n\nset unique_checks=1;\n\n")
 	constraintsWriter.Flush()
 
 	importCommand := "cd '" + directory + "' && pv"
