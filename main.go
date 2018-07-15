@@ -570,9 +570,14 @@ func main() {
 		// start := time.Now()
 
 		bar := pb.StartNew(count)
-
+		k := 0
 		for {
-			data, err := db.Query("select"+columnsString+"from`"+t.table+"`where("+primaryKeysString+")>"+primaryValuesPlaceholder+"order by"+primaryKeysString+"limit "+strconv.Itoa(chunkSize), lastPrimaryValues...)
+			var data *sql.Rows
+			if k == 0 {
+				data, err = db.Query("select" + columnsString + "from`" + t.table + "`order by" + primaryKeysString + "limit " + strconv.Itoa(chunkSize))
+			} else {
+				data, err = db.Query("select"+columnsString+"from`"+t.table+"`where("+primaryKeysString+")>"+primaryValuesPlaceholder+"order by"+primaryKeysString+"limit "+strconv.Itoa(chunkSize), lastPrimaryValues...)
+			}
 			check(err)
 
 			j := 0
@@ -607,12 +612,33 @@ func main() {
 							w.WriteString("'")
 							w.Write(v[i].([]byte))
 							w.WriteString("'")
-						case "tinyint", "smallint", "mediumint", "int", "integer", "bigint":
-							w.WriteString(strconv.Itoa(int(v[i].(int64))))
+						case "tinyint", "int", "smallint", "mediumint", "integer", "bigint":
+							switch n := v[i].(type) {
+							case int64:
+								w.WriteString(strconv.Itoa(int(v[i].(int64))))
+							case []uint8:
+								w.WriteString(string(v[i].([]uint8)))
+							default:
+								log.Fatalln("type not handled", v[i], n)
+							}
 						case "float":
-							w.WriteString(strconv.FormatFloat(float64(v[i].(float32)), 'E', -1, 32))
+							switch n := v[i].(type) {
+							case float32:
+								w.WriteString(strconv.FormatFloat(float64(v[i].(float32)), 'E', -1, 32))
+							case []uint8:
+								w.WriteString(string(v[i].([]uint8)))
+							default:
+								log.Fatalln("type not handled", v[i], n)
+							}
 						case "double", "real":
-							w.WriteString(strconv.FormatFloat(v[i].(float64), 'E', -1, 64))
+							switch n := v[i].(type) {
+							case float32:
+								w.WriteString(strconv.FormatFloat(v[i].(float64), 'E', -1, 64))
+							case []uint8:
+								w.WriteString(string(v[i].([]uint8)))
+							default:
+								log.Fatalln("type not handled", v[i], n)
+							}
 						case "binary", "bit", "varbinary", "tinyblob", "blob", "mediumblob", "longblob":
 							fmt.Fprintf(w, "x'%x'", v[i])
 						default:
@@ -642,6 +668,7 @@ func main() {
 				break
 			}
 
+			k++
 		}
 
 		w.WriteString("\n")
