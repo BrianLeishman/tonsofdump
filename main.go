@@ -101,6 +101,7 @@ func main() {
 	tablesPtr := flag.String("t", "", "comma separated list of tables to dump")
 
 	directoryPtr := flag.String("f", "", "the storage root for companies of downloaded files")
+	bytesPtr := flag.Int("b", 8*1024*1024, "the chunk size in bytes (defaults to 8388608, or 8MB)")
 
 	flag.Parse()
 
@@ -491,7 +492,7 @@ func main() {
 		if averageRowSize <= 0 {
 			averageRowSize = 1024
 		}
-		chunkSize := int(math.Round(8 * 1024 * 1024 / averageRowSize))
+		chunkSize := int(math.Round(float64(*bytesPtr) / averageRowSize))
 		if chunkSize < 1 {
 			chunkSize = 1
 		}
