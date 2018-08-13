@@ -21,6 +21,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -605,7 +606,14 @@ func main() {
 							w.Write(v[i].([]byte))
 							w.WriteString("'")
 						case "tinyint", "smallint", "mediumint", "int", "integer", "bigint":
-							w.WriteString(strconv.Itoa(int(v[i].(int64))))
+							switch v[i].(type) {
+							case int64:
+								w.WriteString(strconv.Itoa(int(v[i].(int64))))
+							case []uint8:
+								w.Write(v[i].([]uint8))
+							default:
+								log.Fatalln("Unhandled type of", reflect.TypeOf(v[i]), "for column", columns[i].column, columns[i].dataType)
+							}
 						case "float":
 							w.WriteString(strconv.FormatFloat(float64(v[i].(float32)), 'E', -1, 32))
 						case "double", "real":
