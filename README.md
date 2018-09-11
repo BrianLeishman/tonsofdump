@@ -1,5 +1,5 @@
 # tonsofdump
-an ultra-fast MySQL backup tool written in Go
+An ultra-fast, multi-threaded MySQL backup tool written in Go
 
 ## Installation
 You can download this like all other Go tools, if you don't know how to install or use Go programs, that's something you'll need to learn (it's easy though)
