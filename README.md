@@ -9,6 +9,29 @@ You can download this like all other Go tools, if you don't know how to install 
 ## Usage
 ### This will only work on tables that have primary keys!! It's very important to how this tool operates, and it **will not** function otherwise!
 
+```
+  -P int
+        your MySQL port (default 3306)
+  -b int
+        the chunk size in bytes (defaults to 8388608, or 8MB) (default 8388608)
+  -d string
+        your MySQL database
+  -f string
+        the storage root for companies of downloaded files
+  -h string
+        your MySQL host (default "localhost")
+  -m int
+        number of max threads/tables to download at once (default 16)
+  -n    skips downloading data for tables
+  -p string
+        your MySQL password
+  -t string
+        comma separated list of tables to dump
+  -u string
+        your MySQL username (default "root")
+  -z    set to compress to a *.tar.bz2 file (requires that tar and lbzip2 are installed)
+  ```
+
     tonsofdump -u root -p password -d myschema -h localhost -t 'mytable,mytable2,$procs'
 
 This will create \*.sql files for each of those two tables listed and all the stored procedures on `myschema`
