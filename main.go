@@ -378,9 +378,7 @@ func main() {
 
 	constraintsWriter.WriteString("use`")
 	constraintsWriter.WriteString(*databasePtr)
-	constraintsWriter.WriteString("`;\n\nset foreign_key_checks=0;\n\nset unique_checks=0;\n\n")
-
-	writers := []*bufio.Writer{constraintsWriter, nil}
+	constraintsWriter.WriteString("`;\n\nset foreign_key_checks=0;\nset unique_checks=0;\n\n")
 
 	// log.Println("Starting table loop")
 	for i, t := range tables {
@@ -390,13 +388,11 @@ func main() {
 			defer wg.Done()
 			defer func() { <-tablesCh }()
 
-			// log.Println("Starting table", t.table)
-			// log.Println("Getting primary key(s)")
-
 			fileName := directory + "/" + t.table + ".sql"
 			f, err := os.Create(fileName)
 			check(err)
 
+			writers := []*bufio.Writer{constraintsWriter, nil}
 			w := bufio.NewWriter(f)
 
 			writers[1] = w
@@ -459,7 +455,7 @@ func main() {
 			// for _, w := range writers {
 			w.WriteString("use`")
 			w.WriteString(*databasePtr)
-			w.WriteString("`;\n\nset foreign_key_checks=0;\n\nset unique_checks=0;\n\nset autocommit=0;\n\n")
+			w.WriteString("`;\n\nset foreign_key_checks=0;\nset unique_checks=0;\nset autocommit=0;\n\n")
 			// }
 
 			w.WriteString("SET global max_allowed_packet=1073741824;\nset @@wait_timeout=31536000;\n\n" +
@@ -790,15 +786,13 @@ func main() {
 			}
 			// log.Println("Done")
 
-			w.WriteString("commit;\n\nset foreign_key_checks=1;\n\nset unique_checks=1;\n\n")
+			w.WriteString("commit;\nset foreign_key_checks=1;\nset unique_checks=1;\n\n")
 
 			w.Flush()
-
-			// pb.UpdateBarPriority(bar, 1)
 		}(i, t)
 	}
 
-	constraintsWriter.WriteString("set foreign_key_checks=1;\n\nset unique_checks=1;\n\nset autocommit=1;\n\n")
+	constraintsWriter.WriteString("set foreign_key_checks=1;\nset unique_checks=1;\nset autocommit=1;\n\n")
 	constraintsWriter.Flush()
 
 	pb.Wait()
