@@ -794,10 +794,10 @@ func main() {
 		}(i, t)
 	}
 
+	pb.Wait()
+
 	constraintsWriter.WriteString("set foreign_key_checks=1;\nset unique_checks=1;\nset autocommit=1;\n\n")
 	constraintsWriter.Flush()
-
-	pb.Wait()
 
 	if *zipPtr {
 		err = exec.Command("tar", "-cf", directory+".tar.bz2", "--remove-files", "-C", directory, ".", "--use-compress-program=lbzip2").Run()
