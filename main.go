@@ -111,6 +111,7 @@ func main() {
 	maxTablesPtr := flag.Int("m", runtime.NumCPU(), "number of max threads/tables to download at once")
 
 	zipPtr := flag.Bool("z", false, "set to compress to a *.tar.bz2 file (requires that tar and lbzip2 are installed)")
+	noDataPtr := flag.Bool("n", false, "skips downloading data for tables")
 
 	flag.Parse()
 
@@ -597,120 +598,122 @@ func main() {
 			// log.Println("Getting table data...")
 			// start := time.Now()
 
-			var bar *mpb.Bar
-			if count != 0 {
-				bar = pb.AddBar(int64(count),
-					mpb.PrependDecorators(
-						// simple name decorator
-						decor.Name(fmt.Sprintf("%s:", t.table)),
-						// decor.DSyncWidth bit enables column width synchronization
-						decor.Percentage(decor.WCSyncSpace),
-					),
-					mpb.BarRemoveOnComplete(),
-				)
-			}
-			k := 0
-			for {
-				var data *sql.Rows
-				if k == 0 {
-					data, err = db.Query("select" + columnsString + "from`" + t.table + "`order by" + primaryKeysString + "limit " + strconv.Itoa(chunkSize))
-				} else {
-					data, err = db.Query("select"+columnsString+"from`"+t.table+"`where("+primaryKeysString+")>"+primaryValuesPlaceholder+"order by"+primaryKeysString+"limit "+strconv.Itoa(chunkSize), lastPrimaryValues...)
+			if !*noDataPtr {
+				var bar *mpb.Bar
+				if count != 0 {
+					bar = pb.AddBar(int64(count),
+						mpb.PrependDecorators(
+							// simple name decorator
+							decor.Name(fmt.Sprintf("%s:", t.table)),
+							// decor.DSyncWidth bit enables column width synchronization
+							decor.Percentage(decor.WCSyncSpace),
+						),
+						mpb.BarRemoveOnComplete(),
+					)
 				}
-				check(err)
-
-				j := 0
-				for data.Next() {
-					start := time.Now()
-					if j != 0 {
-						w.WriteString(",")
+				k := 0
+				for {
+					var data *sql.Rows
+					if k == 0 {
+						data, err = db.Query("select" + columnsString + "from`" + t.table + "`order by" + primaryKeysString + "limit " + strconv.Itoa(chunkSize))
 					} else {
-						w.WriteString("insert ignore into`")
-						w.WriteString(t.table)
-						w.WriteString("`(")
-						w.WriteString(columnsString)
-						w.WriteString(")values")
+						data, err = db.Query("select"+columnsString+"from`"+t.table+"`where("+primaryKeysString+")>"+primaryValuesPlaceholder+"order by"+primaryKeysString+"limit "+strconv.Itoa(chunkSize), lastPrimaryValues...)
 					}
-
-					w.WriteString("(")
-
-					err = data.Scan(p...)
 					check(err)
 
-					for i := 0; i < columnsCount; i++ {
-						if i != 0 {
+					j := 0
+					for data.Next() {
+						start := time.Now()
+						if j != 0 {
 							w.WriteString(",")
-						}
-						if v[i] == nil {
-							w.WriteString("null")
 						} else {
-							switch columns[i].dataType {
-							case "decimal", "numeric":
-								w.Write(v[i].([]byte))
-							case "date", "timestamp":
-								w.WriteString("'")
-								w.Write(v[i].([]byte))
-								w.WriteString("'")
-							case "tinyint", "int", "smallint", "mediumint", "integer", "bigint":
-								switch n := v[i].(type) {
-								case int64:
-									w.WriteString(strconv.Itoa(int(v[i].(int64))))
-								case []uint8:
-									w.WriteString(string(v[i].([]uint8)))
+							w.WriteString("insert ignore into`")
+							w.WriteString(t.table)
+							w.WriteString("`(")
+							w.WriteString(columnsString)
+							w.WriteString(")values")
+						}
+
+						w.WriteString("(")
+
+						err = data.Scan(p...)
+						check(err)
+
+						for i := 0; i < columnsCount; i++ {
+							if i != 0 {
+								w.WriteString(",")
+							}
+							if v[i] == nil {
+								w.WriteString("null")
+							} else {
+								switch columns[i].dataType {
+								case "decimal", "numeric":
+									w.Write(v[i].([]byte))
+								case "date", "timestamp":
+									w.WriteString("'")
+									w.Write(v[i].([]byte))
+									w.WriteString("'")
+								case "tinyint", "int", "smallint", "mediumint", "integer", "bigint":
+									switch n := v[i].(type) {
+									case int64:
+										w.WriteString(strconv.Itoa(int(v[i].(int64))))
+									case []uint8:
+										w.WriteString(string(v[i].([]uint8)))
+									default:
+										log.Fatalln("type not handled", v[i], n)
+									}
+								case "float":
+									switch n := v[i].(type) {
+									case float32:
+										w.WriteString(strconv.FormatFloat(float64(v[i].(float32)), 'E', -1, 32))
+									case []uint8:
+										w.WriteString(string(v[i].([]uint8)))
+									default:
+										log.Fatalln("type not handled", v[i], n)
+									}
+								case "double", "real":
+									switch n := v[i].(type) {
+									case float32:
+										w.WriteString(strconv.FormatFloat(v[i].(float64), 'E', -1, 64))
+									case []uint8:
+										w.WriteString(string(v[i].([]uint8)))
+									default:
+										log.Fatalln("type not handled", v[i], n)
+									}
+								case "binary", "bit", "varbinary", "tinyblob", "blob", "mediumblob", "longblob":
+									fmt.Fprintf(w, "x'%x'", v[i])
 								default:
-									log.Fatalln("type not handled", v[i], n)
+									w.WriteString("_")
+									w.WriteString(columns[i].characterSet)
+									fmt.Fprintf(w, " x'%x'collate ", v[i])
+									w.WriteString(columns[i].collation)
 								}
-							case "float":
-								switch n := v[i].(type) {
-								case float32:
-									w.WriteString(strconv.FormatFloat(float64(v[i].(float32)), 'E', -1, 32))
-								case []uint8:
-									w.WriteString(string(v[i].([]uint8)))
-								default:
-									log.Fatalln("type not handled", v[i], n)
-								}
-							case "double", "real":
-								switch n := v[i].(type) {
-								case float32:
-									w.WriteString(strconv.FormatFloat(v[i].(float64), 'E', -1, 64))
-								case []uint8:
-									w.WriteString(string(v[i].([]uint8)))
-								default:
-									log.Fatalln("type not handled", v[i], n)
-								}
-							case "binary", "bit", "varbinary", "tinyblob", "blob", "mediumblob", "longblob":
-								fmt.Fprintf(w, "x'%x'", v[i])
-							default:
-								w.WriteString("_")
-								w.WriteString(columns[i].characterSet)
-								fmt.Fprintf(w, " x'%x'collate ", v[i])
-								w.WriteString(columns[i].collation)
 							}
 						}
+
+						w.WriteString(")")
+
+						for i := 0; i < primaryKeysCount; i++ {
+							lastPrimaryValues[i] = v[columnsKeys[t.primaryKeys[i]]]
+						}
+
+						bar.IncrBy(1, time.Since(start))
+						j++
 					}
 
-					w.WriteString(")")
-
-					for i := 0; i < primaryKeysCount; i++ {
-						lastPrimaryValues[i] = v[columnsKeys[t.primaryKeys[i]]]
+					if j != 0 {
+						w.WriteString(";\n")
 					}
 
-					bar.IncrBy(1, time.Since(start))
-					j++
+					if j < chunkSize {
+						break
+					}
+
+					k++
 				}
 
-				if j != 0 {
-					w.WriteString(";\n")
-				}
-
-				if j < chunkSize {
-					break
-				}
-
-				k++
+				w.WriteString("\n")
 			}
-
-			w.WriteString("\n")
 
 			// log.Println("Done, took", time.Since(start))
 
