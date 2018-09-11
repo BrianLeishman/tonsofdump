@@ -22,14 +22,17 @@ import (
 	"math"
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
 	"github.com/fatih/color"
 	_ "github.com/go-sql-driver/mysql"
-	pb "gopkg.in/cheggaaa/pb.v1"
+	"github.com/vbauerster/mpb"
+	"github.com/vbauerster/mpb/decor"
 )
 
 var db *sql.DB
@@ -104,6 +107,7 @@ func main() {
 	directoryPtr := flag.String("f", "", "the storage root for companies of downloaded files")
 
 	bytesPtr := flag.Int("b", 8*1024*1024, "the chunk size in bytes (defaults to 8388608, or 8MB)")
+	maxTablesPtr := flag.Int("m", runtime.NumCPU(), "number of max threads/tables to download at once")
 
 	flag.Parse()
 
@@ -139,6 +143,11 @@ func main() {
 	procs := false
 	funcs := false
 	views := false
+
+	var wg sync.WaitGroup
+	pb := mpb.New(mpb.WithWaitGroup(&wg))
+	tablesCh := make(chan struct{}, *maxTablesPtr)
+	foreignKeysMutex := &sync.Mutex{}
 
 	tableNames := strings.Split(*tablesPtr, ",")
 	tables := make([]tableObject, 0, len(tableNames))
@@ -194,139 +203,151 @@ func main() {
 	os.MkdirAll(directory, os.ModePerm)
 
 	if procs {
-		log.Println("Getting procs...")
-		procsCount := 0
+		wg.Add(1)
+		tablesCh <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-tablesCh }()
 
-		f, err := os.Create(directory + "/$procs.sql")
-		check(err)
-		defer f.Sync()
-		defer f.Close()
+			log.Println("Getting procs...")
+			procsCount := 0
 
-		w := bufio.NewWriter(f)
+			f, err := os.Create(directory + "/$procs.sql")
+			check(err)
+			defer f.Sync()
+			defer f.Close()
 
-		procsData, err := db.Query("show procedure status where`Db`=database()")
-		check(err)
+			w := bufio.NewWriter(f)
 
-		w.WriteString("use`")
-		w.WriteString(*databasePtr)
-		w.WriteString("`;\n\n")
-
-		for procsData.Next() {
-			var proc string
-			var x interface{}
-			err = procsData.Scan(&x, &proc, &x, &x, &x, &x, &x, &x, &x, &x, &x)
+			procsData, err := db.Query("show procedure status where`Db`=database()")
 			check(err)
 
-			procData := db.QueryRow("show create procedure`" + proc + "`")
-			var createProc string
-			err = procData.Scan(&x, &x, &createProc, &x, &x, &x)
-			check(err)
+			w.WriteString("use`")
+			w.WriteString(*databasePtr)
+			w.WriteString("`;\n\n")
 
-			w.WriteString("drop procedure if exists`")
-			w.WriteString(proc)
-			w.WriteString("`;\n\nDELIMITER $$\n")
-			w.WriteString(createProc)
-			w.WriteString("$$\nDELIMITER ;\n\n")
+			for procsData.Next() {
+				var proc string
+				var x interface{}
+				err = procsData.Scan(&x, &proc, &x, &x, &x, &x, &x, &x, &x, &x, &x)
+				check(err)
 
-			procsCount++
-		}
+				procData := db.QueryRow("show create procedure`" + proc + "`")
+				var createProc string
+				err = procData.Scan(&x, &x, &createProc, &x, &x, &x)
+				check(err)
 
-		w.Flush()
+				w.WriteString("drop procedure if exists`")
+				w.WriteString(proc)
+				w.WriteString("`;\n\nDELIMITER $$\n")
+				w.WriteString(createProc)
+				w.WriteString("$$\nDELIMITER ;\n\n")
 
-		// log.Println("Done,", procsCount)
+				procsCount++
+			}
+
+			w.Flush()
+		}()
 	}
 
 	if funcs {
-		log.Println("Getting funcs...")
-		funcsCount := 0
+		wg.Add(1)
+		tablesCh <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-tablesCh }()
 
-		f, err := os.Create(directory + "/$funcs.sql")
-		check(err)
-		defer f.Sync()
-		defer f.Close()
+			log.Println("Getting funcs...")
+			funcsCount := 0
 
-		w := bufio.NewWriter(f)
+			f, err := os.Create(directory + "/$funcs.sql")
+			check(err)
+			defer f.Sync()
+			defer f.Close()
 
-		funcsData, err := db.Query("show function status where`Db`=database()")
-		check(err)
+			w := bufio.NewWriter(f)
 
-		w.WriteString("use`")
-		w.WriteString(*databasePtr)
-		w.WriteString("`;\n\n")
-
-		for funcsData.Next() {
-			var function string
-			var x interface{}
-			err = funcsData.Scan(&x, &function, &x, &x, &x, &x, &x, &x, &x, &x, &x)
+			funcsData, err := db.Query("show function status where`Db`=database()")
 			check(err)
 
-			funcData := db.QueryRow("show create function`" + function + "`")
-			var createFunc string
-			err = funcData.Scan(&x, &x, &createFunc, &x, &x, &x)
-			check(err)
+			w.WriteString("use`")
+			w.WriteString(*databasePtr)
+			w.WriteString("`;\n\n")
 
-			w.WriteString("drop function if exists`")
-			w.WriteString(function)
-			w.WriteString("`;\n\nDELIMITER $$\n")
-			w.WriteString(createFunc)
-			w.WriteString("$$\nDELIMITER ;\n\n")
+			for funcsData.Next() {
+				var function string
+				var x interface{}
+				err = funcsData.Scan(&x, &function, &x, &x, &x, &x, &x, &x, &x, &x, &x)
+				check(err)
 
-			funcsCount++
-		}
+				funcData := db.QueryRow("show create function`" + function + "`")
+				var createFunc string
+				err = funcData.Scan(&x, &x, &createFunc, &x, &x, &x)
+				check(err)
 
-		w.Flush()
+				w.WriteString("drop function if exists`")
+				w.WriteString(function)
+				w.WriteString("`;\n\nDELIMITER $$\n")
+				w.WriteString(createFunc)
+				w.WriteString("$$\nDELIMITER ;\n\n")
 
-		// log.Println("Done,", funcsCount)
+				funcsCount++
+			}
+
+			w.Flush()
+		}()
 	}
 
 	if views {
-		log.Println("Getting views...")
-		viewsCount := 0
+		wg.Add(1)
+		tablesCh <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-tablesCh }()
 
-		f, err := os.Create(directory + "/$views.sql")
-		check(err)
-		defer f.Sync()
-		defer f.Close()
+			log.Println("Getting views...")
+			viewsCount := 0
 
-		w := bufio.NewWriter(f)
+			f, err := os.Create(directory + "/$views.sql")
+			check(err)
+			defer f.Sync()
+			defer f.Close()
 
-		viewsData, err := db.Query("select`TABLE_NAME`" +
-			"from`information_schema`.`tables`" +
-			"where`table_schema`=database()" +
-			"and`TABLE_COMMENT`='VIEW';")
-		check(err)
+			w := bufio.NewWriter(f)
 
-		w.WriteString("use`")
-		w.WriteString(*databasePtr)
-		w.WriteString("`;\n\n")
-
-		for viewsData.Next() {
-			var view string
-			err = viewsData.Scan(&view)
+			viewsData, err := db.Query("select`TABLE_NAME`" +
+				"from`information_schema`.`tables`" +
+				"where`table_schema`=database()" +
+				"and`TABLE_COMMENT`='VIEW';")
 			check(err)
 
-			viewData := db.QueryRow("show create view`" + view + "`")
-			var createView string
-			var x interface{}
-			err = viewData.Scan(&x, &createView, &x, &x)
-			check(err)
-
-			w.WriteString("drop view if exists`")
-			w.WriteString(view)
+			w.WriteString("use`")
+			w.WriteString(*databasePtr)
 			w.WriteString("`;\n\n")
-			w.WriteString(createView)
-			w.WriteString(";\n\n")
 
-			viewsCount++
-		}
+			for viewsData.Next() {
+				var view string
+				err = viewsData.Scan(&view)
+				check(err)
 
-		w.Flush()
+				viewData := db.QueryRow("show create view`" + view + "`")
+				var createView string
+				var x interface{}
+				err = viewData.Scan(&x, &createView, &x, &x)
+				check(err)
 
-		// log.Println("Done,", viewsCount)
+				w.WriteString("drop view if exists`")
+				w.WriteString(view)
+				w.WriteString("`;\n\n")
+				w.WriteString(createView)
+				w.WriteString(";\n\n")
+
+				viewsCount++
+			}
+
+			w.Flush()
+		}()
 	}
-
-	// fmt.Printf("%#v", tables)
-	// os.Exit(0)
 
 	for i, t := range tables {
 		// log.Println("Getting create table for", t.table)
@@ -360,395 +381,421 @@ func main() {
 
 	// log.Println("Starting table loop")
 	for i, t := range tables {
-		log.Println("Starting table", t.table)
-		// log.Println("Getting primary key(s)")
+		wg.Add(1)
+		tablesCh <- struct{}{}
+		go func(i int, t tableObject) {
+			defer wg.Done()
+			defer func() { <-tablesCh }()
 
-		fileName := directory + "/" + t.table + ".sql"
-		f, err := os.Create(fileName)
-		check(err)
+			// log.Println("Starting table", t.table)
+			// log.Println("Getting primary key(s)")
 
-		w := bufio.NewWriter(f)
-
-		writers[1] = w
-
-		defer f.Sync()
-		defer f.Close()
-
-		keysData, err := db.Query("select`COLUMN_NAME`" +
-			"from`INFORMATION_SCHEMA`.`STATISTICS`" +
-			"where table_name='" + t.table + "'" +
-			"and`INDEX_NAME`='PRIMARY'" +
-			"and`INDEX_SCHEMA`=database()")
-		check(err)
-
-		primaryKeysString := ""
-		primaryKeysCount := 0
-		primaryValuesPlaceholder := "("
-		first := true
-
-		for keysData.Next() {
-			var columnName string
-			err = keysData.Scan(&columnName)
+			fileName := directory + "/" + t.table + ".sql"
+			f, err := os.Create(fileName)
 			check(err)
 
-			tables[i].primaryKeys = append(tables[i].primaryKeys, columnName)
+			w := bufio.NewWriter(f)
 
-			if !first {
-				primaryKeysString += ","
-				primaryValuesPlaceholder += ","
-			} else {
-				first = false
-			}
+			writers[1] = w
 
-			primaryKeysString += "`" + columnName + "`"
-			primaryValuesPlaceholder += "?"
+			defer f.Sync()
+			defer f.Close()
 
-			primaryKeysCount++
-		}
-
-		if first {
-			panic("No primary keys were found on the table")
-		}
-
-		primaryValuesPlaceholder += ")"
-
-		// log.Println("Done", primaryKeysString)
-
-		keyMatches := keysRegex.FindStringSubmatch(t.createTable)
-		hasKeyMatches := len(keyMatches) >= 2
-		if hasKeyMatches {
-			tables[i].createTable = strings.Replace(tables[i].createTable, keyMatches[1], "", 1)
-		}
-
-		constraintMatches := constraintsRegex.FindStringSubmatch(t.createTable)
-		hasConstraintMatches := len(constraintMatches) >= 2
-		if hasConstraintMatches {
-			tables[i].createTable = strings.Replace(tables[i].createTable, constraintMatches[1], "", 1)
-		}
-
-		// for _, w := range writers {
-		w.WriteString("use`")
-		w.WriteString(*databasePtr)
-		w.WriteString("`;\n\nset foreign_key_checks=0;\n\nset unique_checks=0;\n\n")
-		// }
-
-		w.WriteString("SET global max_allowed_packet=1073741824;\nset @@wait_timeout=31536000;\n\n" +
-			"DROP procedure IF EXISTS `_tonsofdatabase_remove_constraints`;\n" +
-			"DELIMITER $$\n" +
-			"USE `sterling`$$\n" +
-			"CREATE DEFINER=`root`@`%` PROCEDURE `_tonsofdatabase_remove_constraints`(in `$Table` text, in `$Database` text)\n" +
-			"begin\n" +
-			"	declare done int default FALSE;\n" +
-			"	declare dropCommand text;\n" +
-			"	declare dropCur cursor for\n" +
-			"		select concat('alter table`',`TABLE_NAME`,'`DROP FOREIGN KEY`',`CONSTRAINT_NAME`, '`;')\n" +
-			"		from `information_schema`.`KEY_COLUMN_USAGE`\n" +
-			"		where `REFERENCED_TABLE_NAME` = `$Table`\n" +
-			"		and `TABLE_SCHEMA` = `$Database`;\n" +
-			"	declare continue handler for not found set done = true;\n" +
-			"	open dropCur;\n" +
-			"	read_loop: loop\n" +
-			"	fetch dropCur into dropCommand;\n" +
-			"	if done then\n" +
-			"		leave read_loop;\n" +
-			"	end if;\n" +
-			"	set @sdropCommand = dropCommand;\n" +
-			"	prepare dropClientUpdateKeyStmt from @sdropCommand;\n" +
-			"	execute dropClientUpdateKeyStmt;\n" +
-			"		deallocate prepare dropClientUpdateKeyStmt;\n" +
-			"	end loop;\n" +
-			"	close dropCur;\n" +
-			"end$$\n" +
-			"DELIMITER ;\n" +
-			"call`_tonsofdatabase_remove_constraints`('")
-		w.WriteString(t.table)
-		w.WriteString("','")
-		w.WriteString(*databasePtr)
-		w.WriteString("');\n\n")
-
-		// log.Println("Getting triggers...")
-		triggersData, err := db.Query("select`TRIGGER_NAME`" +
-			"from`information_schema`.`triggers`" +
-			"where`EVENT_OBJECT_TABLE`='" + t.table + "' " +
-			"and`EVENT_OBJECT_SCHEMA`=database()")
-		check(err)
-		triggers := make([]string, 0)
-		for triggersData.Next() {
-			var triggerName string
-			err = triggersData.Scan(&triggerName)
+			keysData, err := db.Query("select`COLUMN_NAME`" +
+				"from`INFORMATION_SCHEMA`.`STATISTICS`" +
+				"where table_name='" + t.table + "'" +
+				"and`INDEX_NAME`='PRIMARY'" +
+				"and`INDEX_SCHEMA`=database()")
 			check(err)
 
-			w.WriteString("drop trigger if exists `")
-			w.WriteString(triggerName)
-			w.WriteString("`;\n\n")
+			primaryKeysString := ""
+			primaryKeysCount := 0
+			primaryValuesPlaceholder := "("
+			first := true
 
-			triggers = append(triggers, triggerName)
-		}
-		// log.Println("Done")
-
-		// log.Println("Getting average row size...")
-		averageRowSizeData := db.QueryRow("select avg_row_length " +
-			"from`information_schema`.tables " +
-			"where table_name='" + t.table + "'" +
-			"and`TABLE_SCHEMA`=database();")
-		var averageRowSize float64
-		err = averageRowSizeData.Scan(&averageRowSize)
-		check(err)
-		if averageRowSize <= 0 {
-			averageRowSize = 1024
-		}
-		chunkSize := int(math.Round(float64(*bytesPtr) / averageRowSize))
-		if chunkSize < 1 {
-			chunkSize = 1
-		}
-		// log.Println("Done, avg row size:", averageRowSize, ", chunkSize:", chunkSize)
-
-		// log.Println("Getting row count...")
-		countData := db.QueryRow("select count(*)from`" + t.table + "`")
-		var count int
-		err = countData.Scan(&count)
-		check(err)
-		// log.Println("Done, count:", count)
-
-		w.WriteString("drop table if exists`")
-		w.WriteString(t.table)
-		w.WriteString("`;\n\n")
-		w.WriteString(tables[i].createTable)
-		w.WriteString(";\n\n")
-
-		// log.Println("Getting columns...")
-		columnsData, err := db.Query("select`COLUMN_NAME`,ifnull(`CHARACTER_SET_NAME`,''),ifnull(`COLLATION_NAME`,''),`DATA_TYPE`" +
-			"from`INFORMATION_SCHEMA`.`COLUMNS`" +
-			"where`TABLE_NAME`='" + t.table + "' " +
-			"and`TABLE_SCHEMA`=database()" +
-			"and`EXTRA`not in('VIRTUAL GENERATED','STORED GENERATED')" +
-			"order by`ordinal_position`;")
-		check(err)
-		columnsString := ""
-		columns := []columnObject{}
-		columnsCount := 0
-		columnsKeys := make(map[string]int)
-		for columnsData.Next() {
-			c := columnObject{}
-			err = columnsData.Scan(&c.column, &c.characterSet, &c.collation, &c.dataType)
-			check(err)
-
-			columnsKeys[c.column] = columnsCount
-
-			if columnsCount != 0 {
-				columnsString += ","
-			}
-
-			columnsString += "`" + c.column + "`"
-
-			if StrEmpty(c.characterSet) {
-				c.characterSet = s.defaultCharacterSet
-			}
-
-			if StrEmpty(c.collation) {
-				c.collation = s.defaultCollation
-			}
-
-			columns = append(columns, c)
-
-			columnsCount++
-		}
-		// log.Println("Done")
-
-		lastPrimaryValues := make([]interface{}, primaryKeysCount, primaryKeysCount)
-		for i := 0; i < primaryKeysCount; i++ {
-			lastPrimaryValues[i] = ""
-		}
-
-		v := make([]interface{}, columnsCount, columnsCount)
-		p := make([]interface{}, columnsCount, columnsCount)
-		for i := 0; i < columnsCount; i++ {
-			p[i] = &v[i]
-		}
-
-		t = tables[i]
-
-		// log.Println("Getting table data...")
-		// start := time.Now()
-
-		bar := pb.StartNew(count)
-		k := 0
-		for {
-			var data *sql.Rows
-			if k == 0 {
-				data, err = db.Query("select" + columnsString + "from`" + t.table + "`order by" + primaryKeysString + "limit " + strconv.Itoa(chunkSize))
-			} else {
-				data, err = db.Query("select"+columnsString+"from`"+t.table+"`where("+primaryKeysString+")>"+primaryValuesPlaceholder+"order by"+primaryKeysString+"limit "+strconv.Itoa(chunkSize), lastPrimaryValues...)
-			}
-			check(err)
-
-			j := 0
-			for data.Next() {
-
-				if j != 0 {
-					w.WriteString(",")
-				} else {
-					w.WriteString("insert ignore into`")
-					w.WriteString(t.table)
-					w.WriteString("`(")
-					w.WriteString(columnsString)
-					w.WriteString(")values")
-				}
-
-				w.WriteString("(")
-
-				err = data.Scan(p...)
+			for keysData.Next() {
+				var columnName string
+				err = keysData.Scan(&columnName)
 				check(err)
 
-				for i := 0; i < columnsCount; i++ {
-					if i != 0 {
+				tables[i].primaryKeys = append(tables[i].primaryKeys, columnName)
+
+				if !first {
+					primaryKeysString += ","
+					primaryValuesPlaceholder += ","
+				} else {
+					first = false
+				}
+
+				primaryKeysString += "`" + columnName + "`"
+				primaryValuesPlaceholder += "?"
+
+				primaryKeysCount++
+			}
+
+			if first {
+				panic("No primary keys were found on the table")
+			}
+
+			primaryValuesPlaceholder += ")"
+
+			// log.Println("Done", primaryKeysString)
+
+			keyMatches := keysRegex.FindStringSubmatch(t.createTable)
+			hasKeyMatches := len(keyMatches) >= 2
+			if hasKeyMatches {
+				tables[i].createTable = strings.Replace(tables[i].createTable, keyMatches[1], "", 1)
+			}
+
+			constraintMatches := constraintsRegex.FindStringSubmatch(t.createTable)
+			hasConstraintMatches := len(constraintMatches) >= 2
+			if hasConstraintMatches {
+				tables[i].createTable = strings.Replace(tables[i].createTable, constraintMatches[1], "", 1)
+			}
+
+			// for _, w := range writers {
+			w.WriteString("use`")
+			w.WriteString(*databasePtr)
+			w.WriteString("`;\n\nset foreign_key_checks=0;\n\nset unique_checks=0;\n\n")
+			// }
+
+			w.WriteString("SET global max_allowed_packet=1073741824;\nset @@wait_timeout=31536000;\n\n" +
+				"DROP procedure IF EXISTS `_tonsofdatabase_remove_constraints`;\n" +
+				"DELIMITER $$\n" +
+				"USE `sterling`$$\n" +
+				"CREATE DEFINER=`root`@`%` PROCEDURE `_tonsofdatabase_remove_constraints`(in `$Table` text, in `$Database` text)\n" +
+				"begin\n" +
+				"	declare done int default FALSE;\n" +
+				"	declare dropCommand text;\n" +
+				"	declare dropCur cursor for\n" +
+				"		select concat('alter table`',`TABLE_NAME`,'`DROP FOREIGN KEY`',`CONSTRAINT_NAME`, '`;')\n" +
+				"		from `information_schema`.`KEY_COLUMN_USAGE`\n" +
+				"		where `REFERENCED_TABLE_NAME` = `$Table`\n" +
+				"		and `TABLE_SCHEMA` = `$Database`;\n" +
+				"	declare continue handler for not found set done = true;\n" +
+				"	open dropCur;\n" +
+				"	read_loop: loop\n" +
+				"	fetch dropCur into dropCommand;\n" +
+				"	if done then\n" +
+				"		leave read_loop;\n" +
+				"	end if;\n" +
+				"	set @sdropCommand = dropCommand;\n" +
+				"	prepare dropClientUpdateKeyStmt from @sdropCommand;\n" +
+				"	execute dropClientUpdateKeyStmt;\n" +
+				"		deallocate prepare dropClientUpdateKeyStmt;\n" +
+				"	end loop;\n" +
+				"	close dropCur;\n" +
+				"end$$\n" +
+				"DELIMITER ;\n" +
+				"call`_tonsofdatabase_remove_constraints`('")
+			w.WriteString(t.table)
+			w.WriteString("','")
+			w.WriteString(*databasePtr)
+			w.WriteString("');\n\n")
+
+			// log.Println("Getting triggers...")
+			triggersData, err := db.Query("select`TRIGGER_NAME`" +
+				"from`information_schema`.`triggers`" +
+				"where`EVENT_OBJECT_TABLE`='" + t.table + "' " +
+				"and`EVENT_OBJECT_SCHEMA`=database()")
+			check(err)
+			triggers := make([]string, 0)
+			for triggersData.Next() {
+				var triggerName string
+				err = triggersData.Scan(&triggerName)
+				check(err)
+
+				w.WriteString("drop trigger if exists `")
+				w.WriteString(triggerName)
+				w.WriteString("`;\n\n")
+
+				triggers = append(triggers, triggerName)
+			}
+			// log.Println("Done")
+
+			// log.Println("Getting average row size...")
+			averageRowSizeData := db.QueryRow("select avg_row_length " +
+				"from`information_schema`.tables " +
+				"where table_name='" + t.table + "'" +
+				"and`TABLE_SCHEMA`=database();")
+			var averageRowSize float64
+			err = averageRowSizeData.Scan(&averageRowSize)
+			check(err)
+			if averageRowSize <= 0 {
+				averageRowSize = 1024
+			}
+			chunkSize := int(math.Round(float64(*bytesPtr) / averageRowSize))
+			if chunkSize < 1 {
+				chunkSize = 1
+			}
+			// log.Println("Done, avg row size:", averageRowSize, ", chunkSize:", chunkSize)
+
+			// log.Println("Getting row count...")
+			countData := db.QueryRow("select count(*)from`" + t.table + "`")
+			var count int
+			err = countData.Scan(&count)
+			check(err)
+			// log.Println("Done, count:", count)
+
+			w.WriteString("drop table if exists`")
+			w.WriteString(t.table)
+			w.WriteString("`;\n\n")
+			w.WriteString(tables[i].createTable)
+			w.WriteString(";\n\n")
+
+			// log.Println("Getting columns...")
+			columnsData, err := db.Query("select`COLUMN_NAME`,ifnull(`CHARACTER_SET_NAME`,''),ifnull(`COLLATION_NAME`,''),`DATA_TYPE`" +
+				"from`INFORMATION_SCHEMA`.`COLUMNS`" +
+				"where`TABLE_NAME`='" + t.table + "' " +
+				"and`TABLE_SCHEMA`=database()" +
+				"and`EXTRA`not in('VIRTUAL GENERATED','STORED GENERATED')" +
+				"order by`ordinal_position`;")
+			check(err)
+			columnsString := ""
+			columns := []columnObject{}
+			columnsCount := 0
+			columnsKeys := make(map[string]int)
+			for columnsData.Next() {
+				c := columnObject{}
+				err = columnsData.Scan(&c.column, &c.characterSet, &c.collation, &c.dataType)
+				check(err)
+
+				columnsKeys[c.column] = columnsCount
+
+				if columnsCount != 0 {
+					columnsString += ","
+				}
+
+				columnsString += "`" + c.column + "`"
+
+				if StrEmpty(c.characterSet) {
+					c.characterSet = s.defaultCharacterSet
+				}
+
+				if StrEmpty(c.collation) {
+					c.collation = s.defaultCollation
+				}
+
+				columns = append(columns, c)
+
+				columnsCount++
+			}
+			// log.Println("Done")
+
+			lastPrimaryValues := make([]interface{}, primaryKeysCount, primaryKeysCount)
+			for i := 0; i < primaryKeysCount; i++ {
+				lastPrimaryValues[i] = ""
+			}
+
+			v := make([]interface{}, columnsCount, columnsCount)
+			p := make([]interface{}, columnsCount, columnsCount)
+			for i := 0; i < columnsCount; i++ {
+				p[i] = &v[i]
+			}
+
+			t = tables[i]
+
+			// log.Println("Getting table data...")
+			// start := time.Now()
+
+			bar := pb.AddBar(int64(count),
+				mpb.PrependDecorators(
+					// simple name decorator
+					decor.Name(fmt.Sprintf("%s:", t.table)),
+					// decor.DSyncWidth bit enables column width synchronization
+					decor.Percentage(decor.WCSyncSpace),
+				),
+				mpb.AppendDecorators(
+					// replace ETA decorator with "done" message, OnComplete event
+					decor.OnComplete(
+						// ETA decorator with ewma age of 60
+						decor.EwmaETA(decor.ET_STYLE_GO, 60), "done",
+					),
+				),
+			)
+			k := 0
+			for {
+				var data *sql.Rows
+				if k == 0 {
+					data, err = db.Query("select" + columnsString + "from`" + t.table + "`order by" + primaryKeysString + "limit " + strconv.Itoa(chunkSize))
+				} else {
+					data, err = db.Query("select"+columnsString+"from`"+t.table+"`where("+primaryKeysString+")>"+primaryValuesPlaceholder+"order by"+primaryKeysString+"limit "+strconv.Itoa(chunkSize), lastPrimaryValues...)
+				}
+				check(err)
+
+				j := 0
+				for data.Next() {
+					start := time.Now()
+					if j != 0 {
 						w.WriteString(",")
-					}
-					if v[i] == nil {
-						w.WriteString("null")
 					} else {
-						switch columns[i].dataType {
-						case "decimal", "numeric":
-							w.Write(v[i].([]byte))
-						case "date", "timestamp":
-							w.WriteString("'")
-							w.Write(v[i].([]byte))
-							w.WriteString("'")
-						case "tinyint", "int", "smallint", "mediumint", "integer", "bigint":
-							switch n := v[i].(type) {
-							case int64:
-								w.WriteString(strconv.Itoa(int(v[i].(int64))))
-							case []uint8:
-								w.WriteString(string(v[i].([]uint8)))
+						w.WriteString("insert ignore into`")
+						w.WriteString(t.table)
+						w.WriteString("`(")
+						w.WriteString(columnsString)
+						w.WriteString(")values")
+					}
+
+					w.WriteString("(")
+
+					err = data.Scan(p...)
+					check(err)
+
+					for i := 0; i < columnsCount; i++ {
+						if i != 0 {
+							w.WriteString(",")
+						}
+						if v[i] == nil {
+							w.WriteString("null")
+						} else {
+							switch columns[i].dataType {
+							case "decimal", "numeric":
+								w.Write(v[i].([]byte))
+							case "date", "timestamp":
+								w.WriteString("'")
+								w.Write(v[i].([]byte))
+								w.WriteString("'")
+							case "tinyint", "int", "smallint", "mediumint", "integer", "bigint":
+								switch n := v[i].(type) {
+								case int64:
+									w.WriteString(strconv.Itoa(int(v[i].(int64))))
+								case []uint8:
+									w.WriteString(string(v[i].([]uint8)))
+								default:
+									log.Fatalln("type not handled", v[i], n)
+								}
+							case "float":
+								switch n := v[i].(type) {
+								case float32:
+									w.WriteString(strconv.FormatFloat(float64(v[i].(float32)), 'E', -1, 32))
+								case []uint8:
+									w.WriteString(string(v[i].([]uint8)))
+								default:
+									log.Fatalln("type not handled", v[i], n)
+								}
+							case "double", "real":
+								switch n := v[i].(type) {
+								case float32:
+									w.WriteString(strconv.FormatFloat(v[i].(float64), 'E', -1, 64))
+								case []uint8:
+									w.WriteString(string(v[i].([]uint8)))
+								default:
+									log.Fatalln("type not handled", v[i], n)
+								}
+							case "binary", "bit", "varbinary", "tinyblob", "blob", "mediumblob", "longblob":
+								fmt.Fprintf(w, "x'%x'", v[i])
 							default:
-								log.Fatalln("type not handled", v[i], n)
+								w.WriteString("_")
+								w.WriteString(columns[i].characterSet)
+								fmt.Fprintf(w, " x'%x'collate ", v[i])
+								w.WriteString(columns[i].collation)
 							}
-						case "float":
-							switch n := v[i].(type) {
-							case float32:
-								w.WriteString(strconv.FormatFloat(float64(v[i].(float32)), 'E', -1, 32))
-							case []uint8:
-								w.WriteString(string(v[i].([]uint8)))
-							default:
-								log.Fatalln("type not handled", v[i], n)
-							}
-						case "double", "real":
-							switch n := v[i].(type) {
-							case float32:
-								w.WriteString(strconv.FormatFloat(v[i].(float64), 'E', -1, 64))
-							case []uint8:
-								w.WriteString(string(v[i].([]uint8)))
-							default:
-								log.Fatalln("type not handled", v[i], n)
-							}
-						case "binary", "bit", "varbinary", "tinyblob", "blob", "mediumblob", "longblob":
-							fmt.Fprintf(w, "x'%x'", v[i])
-						default:
-							w.WriteString("_")
-							w.WriteString(columns[i].characterSet)
-							fmt.Fprintf(w, " x'%x'collate ", v[i])
-							w.WriteString(columns[i].collation)
 						}
 					}
+
+					w.WriteString(")")
+
+					for i := 0; i < primaryKeysCount; i++ {
+						lastPrimaryValues[i] = v[columnsKeys[t.primaryKeys[i]]]
+					}
+
+					bar.IncrBy(1, time.Since(start))
+					j++
 				}
 
-				w.WriteString(")")
-
-				for i := 0; i < primaryKeysCount; i++ {
-					lastPrimaryValues[i] = v[columnsKeys[t.primaryKeys[i]]]
+				if j != 0 {
+					w.WriteString(";\n")
 				}
 
-				bar.Increment()
-				j++
+				if j < chunkSize {
+					break
+				}
+
+				k++
 			}
 
-			if j != 0 {
-				w.WriteString(";\n")
+			w.WriteString("\n")
+
+			// log.Println("Done, took", time.Since(start))
+
+			// log.Println("Getting create triggers...")
+			triggersCount := 0
+			for _, t := range triggers {
+				triggerData := db.QueryRow("SHOW CREATE trigger`" + t + "`;")
+				var createTrigger string
+				var x interface{}
+				err = triggerData.Scan(&x, &x, &createTrigger, &x, &x, &x, &x)
+				check(err)
+
+				w.WriteString("DELIMITER $$\n")
+				w.WriteString(createTrigger)
+				w.WriteString("$$\nDELIMITER ;\n\n")
+
+				triggersCount++
 			}
+			// log.Println("Done,", triggersCount)
 
-			if j < chunkSize {
-				break
-			}
-
-			k++
-		}
-
-		w.WriteString("\n")
-
-		bar.Finish()
-		// log.Println("Done, took", time.Since(start))
-
-		// log.Println("Getting create triggers...")
-		triggersCount := 0
-		for _, t := range triggers {
-			triggerData := db.QueryRow("SHOW CREATE trigger`" + t + "`;")
-			var createTrigger string
-			var x interface{}
-			err = triggerData.Scan(&x, &x, &createTrigger, &x, &x, &x, &x)
-			check(err)
-
-			w.WriteString("DELIMITER $$\n")
-			w.WriteString(createTrigger)
-			w.WriteString("$$\nDELIMITER ;\n\n")
-
-			triggersCount++
-		}
-		// log.Println("Done,", triggersCount)
-
-		if hasKeyMatches {
-			w.WriteString("alter table`")
-			w.WriteString(t.table)
-			w.WriteString("`")
-			w.WriteString(createToAlterRegex.ReplaceAllString(strings.TrimLeft(keyMatches[1], ","), "\n  ADD "))
-			w.WriteString(";\n\n")
-		}
-
-		// log.Println("Getting foreign keys...")
-		foreignKeysData, err := db.Query("select`CONSTRAINT_NAME`,`TABLE_NAME`,`COLUMN_NAME`,`REFERENCED_COLUMN_NAME`" +
-			"from`information_schema`.`KEY_COLUMN_USAGE`" +
-			"where`REFERENCED_TABLE_NAME`='" + t.table + "' " +
-			"and`TABLE_SCHEMA`=database();")
-		check(err)
-
-		hasForeignKeys := false
-		constraintsReplacement := ";\nalter table`" + t.table + "`add "
-
-		for _, w := range writers {
-			if hasConstraintMatches {
-				w.WriteString(constraintsCreateToAlterRegex.ReplaceAllString(strings.TrimLeft(constraintMatches[1], ","), constraintsReplacement))
+			if hasKeyMatches {
+				w.WriteString("alter table`")
+				w.WriteString(t.table)
+				w.WriteString("`")
+				w.WriteString(createToAlterRegex.ReplaceAllString(strings.TrimLeft(keyMatches[1], ","), "\n  ADD "))
 				w.WriteString(";\n\n")
 			}
 
-			for foreignKeysData.Next() {
-				f := foreignKeyObject{}
-				err = foreignKeysData.Scan(&f.constraint, &f.table, &f.column, &f.referencedColumn)
-				check(err)
+			// log.Println("Getting foreign keys...")
+			foreignKeysData, err := db.Query("select`CONSTRAINT_NAME`,`TABLE_NAME`,`COLUMN_NAME`,`REFERENCED_COLUMN_NAME`" +
+				"from`information_schema`.`KEY_COLUMN_USAGE`" +
+				"where`REFERENCED_TABLE_NAME`='" + t.table + "' " +
+				"and`TABLE_SCHEMA`=database();")
+			check(err)
 
-				w.WriteString("alter table`")
-				w.WriteString(f.table)
-				w.WriteString("`add constraint`")
-				w.WriteString(f.column)
-				w.WriteString("`foreign key(`")
-				w.WriteString(f.constraint)
-				w.WriteString("`)references`")
-				w.WriteString(t.table)
-				w.WriteString("`(`")
-				w.WriteString(f.referencedColumn)
-				w.WriteString("`);\n")
+			hasForeignKeys := false
+			constraintsReplacement := ";\nalter table`" + t.table + "`add "
 
-				hasForeignKeys = true
+			for i, w := range writers {
+				if i == 0 {
+					foreignKeysMutex.Lock()
+				}
+				if hasConstraintMatches {
+					w.WriteString(constraintsCreateToAlterRegex.ReplaceAllString(strings.TrimLeft(constraintMatches[1], ","), constraintsReplacement))
+					w.WriteString(";\n\n")
+				}
+
+				for foreignKeysData.Next() {
+					f := foreignKeyObject{}
+					err = foreignKeysData.Scan(&f.constraint, &f.table, &f.column, &f.referencedColumn)
+					check(err)
+
+					w.WriteString("alter table`")
+					w.WriteString(f.table)
+					w.WriteString("`add constraint`")
+					w.WriteString(f.column)
+					w.WriteString("`foreign key(`")
+					w.WriteString(f.constraint)
+					w.WriteString("`)references`")
+					w.WriteString(t.table)
+					w.WriteString("`(`")
+					w.WriteString(f.referencedColumn)
+					w.WriteString("`);\n")
+
+					hasForeignKeys = true
+				}
+				if hasForeignKeys {
+					w.WriteString("\n")
+				}
+				if i == 0 {
+					foreignKeysMutex.Unlock()
+				}
 			}
-			if hasForeignKeys {
-				w.WriteString("\n")
-			}
-		}
-		// log.Println("Done")
+			// log.Println("Done")
 
-		w.WriteString("set foreign_key_checks=1;\n\nset unique_checks=1;\n\n")
+			w.WriteString("set foreign_key_checks=1;\n\nset unique_checks=1;\n\n")
 
-		// fmt.Println("Import dump file with `pv", "'"+fileName+"'", "| mysql -u root -p -f`")
+			// fmt.Println("Import dump file with `pv", "'"+fileName+"'", "| mysql -u root -p -f`")
 
-		w.Flush()
+			w.Flush()
+		}(i, t)
 	}
 
 	constraintsWriter.WriteString("set foreign_key_checks=1;\n\nset unique_checks=1;\n\n")
@@ -772,6 +819,8 @@ func main() {
 	}
 
 	importCommand += " '$constraints.sql' | mysql -fc -u root -p"
+
+	pb.Wait()
 
 	color.Cyan("%s\n", importCommand)
 
