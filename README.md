@@ -21,7 +21,7 @@ You can download this like all other Go tools, if you don't know how to install 
   -h string
         your MySQL host (default "localhost")
   -m int
-        number of max threads/tables to download at once (default 16)
+        number of max threads/tables to download at once (default CPU count)
   -n    skips downloading data for tables
   -p string
         your MySQL password
