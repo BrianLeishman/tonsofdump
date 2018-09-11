@@ -119,10 +119,6 @@ func main() {
 		panic("your MySQL username is required (-u)")
 	}
 
-	// if StrEmpty(*passwordPtr) {
-	// 	panic("your MySQL password is required (-p)")
-	// }
-
 	if StrEmpty(*hostPtr) {
 		panic("your MySQL host is required (-h)")
 	}
@@ -354,13 +350,11 @@ func main() {
 	}
 
 	for i, t := range tables {
-		// log.Println("Getting create table for", t.table)
 		tableCreateData := db.QueryRow("show create table`" + t.table + "`")
 		err = tableCreateData.Scan(&tables[i].table, &tables[i].createTable)
 		check(err)
 	}
 
-	// log.Println("Getting schema character set & collation")
 	schemaData := db.QueryRow("select`DEFAULT_CHARACTER_SET_NAME`,`DEFAULT_COLLATION_NAME`" +
 		"from`INFORMATION_SCHEMA`.`SCHEMATA`" +
 		"where schema_name=database();")
@@ -381,7 +375,6 @@ func main() {
 	constraintsWriter.WriteString(*databasePtr)
 	constraintsWriter.WriteString("`;\n\nset foreign_key_checks=0;\nset unique_checks=0;\n\n")
 
-	// log.Println("Starting table loop")
 	for i, t := range tables {
 		wg.Add(1)
 		tablesCh <- struct{}{}
@@ -439,8 +432,6 @@ func main() {
 
 			primaryValuesPlaceholder += ")"
 
-			// log.Println("Done", primaryKeysString)
-
 			keyMatches := keysRegex.FindStringSubmatch(t.createTable)
 			hasKeyMatches := len(keyMatches) >= 2
 			if hasKeyMatches {
@@ -453,11 +444,13 @@ func main() {
 				tables[i].createTable = strings.Replace(tables[i].createTable, constraintMatches[1], "", 1)
 			}
 
-			// for _, w := range writers {
+			w.WriteString("\\! echo \"Starting ")
+			w.WriteString(t.table)
+			w.WriteString(" inserts\";\n")
+
 			w.WriteString("use`")
 			w.WriteString(*databasePtr)
 			w.WriteString("`;\n\nset foreign_key_checks=0;\nset unique_checks=0;\nset autocommit=0;\n\n")
-			// }
 
 			w.WriteString("SET global max_allowed_packet=1073741824;\nset @@wait_timeout=31536000;\n\n" +
 				"DROP procedure IF EXISTS `_tonsofdatabase_remove_constraints`;\n" +
@@ -493,7 +486,6 @@ func main() {
 			w.WriteString(*databasePtr)
 			w.WriteString("');\n\n")
 
-			// log.Println("Getting triggers...")
 			triggersData, err := db.Query("select`TRIGGER_NAME`" +
 				"from`information_schema`.`triggers`" +
 				"where`EVENT_OBJECT_TABLE`='" + t.table + "' " +
@@ -511,9 +503,7 @@ func main() {
 
 				triggers = append(triggers, triggerName)
 			}
-			// log.Println("Done")
 
-			// log.Println("Getting average row size...")
 			averageRowSizeData := db.QueryRow("select avg_row_length " +
 				"from`information_schema`.tables " +
 				"where table_name='" + t.table + "'" +
@@ -528,14 +518,11 @@ func main() {
 			if chunkSize < 1 {
 				chunkSize = 1
 			}
-			// log.Println("Done, avg row size:", averageRowSize, ", chunkSize:", chunkSize)
 
-			// log.Println("Getting row count...")
 			countData := db.QueryRow("select count(*)from`" + t.table + "`")
 			var count int
 			err = countData.Scan(&count)
 			check(err)
-			// log.Println("Done, count:", count)
 
 			w.WriteString("drop table if exists`")
 			w.WriteString(t.table)
@@ -543,7 +530,6 @@ func main() {
 			w.WriteString(tables[i].createTable)
 			w.WriteString(";\n\n")
 
-			// log.Println("Getting columns...")
 			columnsData, err := db.Query("select`COLUMN_NAME`,ifnull(`CHARACTER_SET_NAME`,''),ifnull(`COLLATION_NAME`,''),`DATA_TYPE`" +
 				"from`INFORMATION_SCHEMA`.`COLUMNS`" +
 				"where`TABLE_NAME`='" + t.table + "' " +
@@ -580,7 +566,6 @@ func main() {
 
 				columnsCount++
 			}
-			// log.Println("Done")
 
 			lastPrimaryValues := make([]interface{}, primaryKeysCount, primaryKeysCount)
 			for i := 0; i < primaryKeysCount; i++ {
@@ -594,9 +579,6 @@ func main() {
 			}
 
 			t = tables[i]
-
-			// log.Println("Getting table data...")
-			// start := time.Now()
 
 			if !*noDataPtr {
 				var bar *mpb.Bar
@@ -703,6 +685,11 @@ func main() {
 
 					if j != 0 {
 						w.WriteString(";\n")
+						w.WriteString("\\! echo \"")
+						w.WriteString(t.table)
+						w.WriteString(" ")
+						w.WriteString(strconv.Itoa(int(float64(bar.Current()) / float64(count) * float64(100))))
+						w.WriteString("%\";\n")
 					}
 
 					if j < chunkSize {
@@ -715,9 +702,6 @@ func main() {
 				w.WriteString("\n")
 			}
 
-			// log.Println("Done, took", time.Since(start))
-
-			// log.Println("Getting create triggers...")
 			triggersCount := 0
 			for _, t := range triggers {
 				triggerData := db.QueryRow("SHOW CREATE trigger`" + t + "`;")
@@ -732,7 +716,10 @@ func main() {
 
 				triggersCount++
 			}
-			// log.Println("Done,", triggersCount)
+
+			w.WriteString("\\! echo \"Creating keys and indexes for ")
+			w.WriteString(t.table)
+			w.WriteString("\";\n")
 
 			if hasKeyMatches {
 				w.WriteString("alter table`")
@@ -742,7 +729,6 @@ func main() {
 				w.WriteString(";\n\n")
 			}
 
-			// log.Println("Getting foreign keys...")
 			foreignKeysData, err := db.Query("select`CONSTRAINT_NAME`,`TABLE_NAME`,`COLUMN_NAME`,`REFERENCED_COLUMN_NAME`" +
 				"from`information_schema`.`KEY_COLUMN_USAGE`" +
 				"where`REFERENCED_TABLE_NAME`='" + t.table + "' " +
@@ -753,14 +739,21 @@ func main() {
 			constraintsReplacement := ";\nalter table`" + t.table + "`add "
 
 			for i, w := range writers {
+				// Lock if if the writer being used is the foreign key writer
+				// so the different table threads don't try to write to it at the
+				// same time
 				if i == 0 {
 					foreignKeysMutex.Lock()
 				}
+
+				// If the table has foreign keys as part of the table syntax,
+				// we need to add that back now
 				if hasConstraintMatches {
 					w.WriteString(constraintsCreateToAlterRegex.ReplaceAllString(strings.TrimLeft(constraintMatches[1], ","), constraintsReplacement))
 					w.WriteString(";\n\n")
 				}
 
+				// And we also need to recreate each foreign that references this table
 				for foreignKeysData.Next() {
 					f := foreignKeyObject{}
 					err = foreignKeysData.Scan(&f.constraint, &f.table, &f.column, &f.referencedColumn)
@@ -783,14 +776,20 @@ func main() {
 				if hasForeignKeys {
 					w.WriteString("\n")
 				}
+
+				// Unlock the foreign keys writer to let another thread access that writer
 				if i == 0 {
+					w.Flush()
 					foreignKeysMutex.Unlock()
 				}
 			}
-			// log.Println("Done")
 
+			// Turn back on foreign key checking and unique key checks
+			// and commit the insert statements after all the inserts have been executed
 			w.WriteString("commit;\nset foreign_key_checks=1;\nset unique_checks=1;\n\n")
 
+			// Flush the writer (if the program exits without flushing
+			// then they never get written to the file)
 			w.Flush()
 		}(i, t)
 	}
