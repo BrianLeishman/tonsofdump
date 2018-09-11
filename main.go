@@ -21,6 +21,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"os/exec"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -108,6 +109,8 @@ func main() {
 
 	bytesPtr := flag.Int("b", 8*1024*1024, "the chunk size in bytes (defaults to 8388608, or 8MB)")
 	maxTablesPtr := flag.Int("m", runtime.NumCPU(), "number of max threads/tables to download at once")
+
+	zipPtr := flag.Bool("z", false, "set to compress to a *.tar.bz2 file (requires that tar and lbzip2 are installed)")
 
 	flag.Parse()
 
@@ -456,7 +459,7 @@ func main() {
 			// for _, w := range writers {
 			w.WriteString("use`")
 			w.WriteString(*databasePtr)
-			w.WriteString("`;\n\nset foreign_key_checks=0;\n\nset unique_checks=0;\n\n")
+			w.WriteString("`;\n\nset foreign_key_checks=0;\n\nset unique_checks=0;\n\nset autocommit=0;\n\n")
 			// }
 
 			w.WriteString("SET global max_allowed_packet=1073741824;\nset @@wait_timeout=31536000;\n\n" +
@@ -787,7 +790,7 @@ func main() {
 			}
 			// log.Println("Done")
 
-			w.WriteString("set foreign_key_checks=1;\n\nset unique_checks=1;\n\n")
+			w.WriteString("commit;\n\nset foreign_key_checks=1;\n\nset unique_checks=1;\n\n")
 
 			w.Flush()
 
@@ -795,30 +798,37 @@ func main() {
 		}(i, t)
 	}
 
-	constraintsWriter.WriteString("set foreign_key_checks=1;\n\nset unique_checks=1;\n\n")
+	constraintsWriter.WriteString("set foreign_key_checks=1;\n\nset unique_checks=1;\n\nset autocommit=1;\n\n")
 	constraintsWriter.Flush()
-
-	importCommand := "cd '" + directory + "' && pv"
-	for _, t := range tables {
-		importCommand += " '" + t.table + ".sql'"
-	}
-
-	if funcs {
-		importCommand += " '$funcs.sql'"
-	}
-
-	if procs {
-		importCommand += " '$procs.sql'"
-	}
-
-	if views {
-		importCommand += " '$views.sql'"
-	}
-
-	importCommand += " '$constraints.sql' | mysql -fc -u root -p"
 
 	pb.Wait()
 
-	color.Cyan("%s\n", importCommand)
+	if *zipPtr {
+		err = exec.Command("tar", "-cf", directory+".tar.bz2", "--remove-files", "-C", directory, ".", "--use-compress-program=lbzip2").Run()
+		if err != nil {
+			log.Fatalln(err)
+		}
+	} else {
+		importCommand := "cd '" + directory + "' && pv"
+		for _, t := range tables {
+			importCommand += " '" + t.table + ".sql'"
+		}
+
+		if funcs {
+			importCommand += " '$funcs.sql'"
+		}
+
+		if procs {
+			importCommand += " '$procs.sql'"
+		}
+
+		if views {
+			importCommand += " '$views.sql'"
+		}
+
+		importCommand += " '$constraints.sql' | mysql -fc -u root -p"
+
+		color.Cyan("%s\n", importCommand)
+	}
 
 }
