@@ -598,21 +598,18 @@ func main() {
 			// log.Println("Getting table data...")
 			// start := time.Now()
 
-			bar := pb.AddBar(int64(count),
-				mpb.PrependDecorators(
-					// simple name decorator
-					decor.Name(fmt.Sprintf("%s:", t.table)),
-					// decor.DSyncWidth bit enables column width synchronization
-					decor.Percentage(decor.WCSyncSpace),
-				),
-				mpb.AppendDecorators(
-					// replace ETA decorator with "done" message, OnComplete event
-					decor.OnComplete(
-						// ETA decorator with ewma age of 60
-						decor.EwmaETA(decor.ET_STYLE_GO, 60), "done",
+			var bar *mpb.Bar
+			if count != 0 {
+				bar = pb.AddBar(int64(count),
+					mpb.PrependDecorators(
+						// simple name decorator
+						decor.Name(fmt.Sprintf("%s:", t.table)),
+						// decor.DSyncWidth bit enables column width synchronization
+						decor.Percentage(decor.WCSyncSpace),
 					),
-				),
-			)
+					mpb.BarRemoveOnComplete(),
+				)
+			}
 			k := 0
 			for {
 				var data *sql.Rows
@@ -792,9 +789,9 @@ func main() {
 
 			w.WriteString("set foreign_key_checks=1;\n\nset unique_checks=1;\n\n")
 
-			// fmt.Println("Import dump file with `pv", "'"+fileName+"'", "| mysql -u root -p -f`")
-
 			w.Flush()
+
+			// pb.UpdateBarPriority(bar, 1)
 		}(i, t)
 	}
 
