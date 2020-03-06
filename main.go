@@ -590,6 +590,10 @@ func main() {
 							// decor.DSyncWidth bit enables column width synchronization
 							decor.Percentage(decor.WCSyncSpace),
 						),
+						mpb.AppendDecorators(
+							// ETA
+							decor.AverageETA(decor.ET_STYLE_MMSS),
+						),
 						mpb.BarRemoveOnComplete(),
 					)
 				}
