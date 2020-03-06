@@ -590,6 +590,10 @@ func main() {
 							// decor.DSyncWidth bit enables column width synchronization
 							decor.Percentage(decor.WCSyncSpace),
 						),
+						mpb.AppendDecorators(
+							// ETA
+							decor.AverageETA(decor.ET_STYLE_MMSS),
+						),
 						mpb.BarRemoveOnComplete(),
 					)
 				}
@@ -605,7 +609,6 @@ func main() {
 
 					j := 0
 					for data.Next() {
-						start := time.Now()
 						if j != 0 {
 							w.WriteString(",")
 						} else {
@@ -679,7 +682,7 @@ func main() {
 							lastPrimaryValues[i] = v[columnsKeys[t.primaryKeys[i]]]
 						}
 
-						bar.IncrBy(1, time.Since(start))
+						bar.Increment()
 						j++
 					}
 
